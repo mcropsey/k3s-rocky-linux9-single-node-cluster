@@ -1,6 +1,7 @@
 # Single-Node k3s + Nginx Ingress on Rocky Linux 9
 
-Clean, tested step-by-step guide based on a real Rocky Linux 9 setup.
+Clean, tested step-by-step guide.  
+This version uses **Helm + hostNetwork** for the Nginx Ingress Controller (recommended for single-node labs).
 
 ---
 
@@ -55,33 +56,52 @@ You should only see CoreDNS, local-path-provisioner, and metrics-server (no Trae
 
 ---
 
-## 5. Install Nginx Ingress Controller
+## 5. Install Helm
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.1/deploy/static/provider/baremetal/deploy.yaml
+curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+helm version
 ```
 
-Wait for it to become ready:
+---
+
+## 6. Install Nginx Ingress Controller (with hostNetwork)
+
+This is the recommended method for a single-node k3s lab.  
+It makes nginx listen directly on the host’s ports 80 and 443.
+
+```bash
+helm upgrade --install ingress-nginx ingress-nginx \
+  --repo https://kubernetes.github.io/ingress-nginx \
+  --namespace ingress-nginx --create-namespace \
+  --set controller.hostNetwork=true \
+  --set controller.hostPort.enabled=true \
+  --set controller.service.type=ClusterIP \
+  --set controller.kind=DaemonSet
+```
+
+Wait for the controller to become ready:
 
 ```bash
 kubectl get pods -n ingress-nginx -w
 ```
 
-(Press `Ctrl+C` when the controller is `Running`)
+(Press `Ctrl+C` when the controller shows `1/1 Running`)
 
 ---
 
-## 6. Check the Ingress service
+## 7. Verify Nginx is listening on the host
 
 ```bash
-kubectl get svc -n ingress-nginx
+kubectl get pods -n ingress-nginx -o wide
+ss -tlnp | grep -E ':80|:443'
 ```
 
-Note the **NodePort** numbers (example: `80:30905/TCP` and `443:30654/TCP`).
+You should see the controller pod using the node IP and nginx listening on `0.0.0.0:80` and `0.0.0.0:443`.
 
 ---
 
-## Quick Test App (optional)
+## 8. Quick Test (optional)
 
 ```bash
 # Create a simple nginx app
@@ -97,7 +117,8 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-  - http:
+  - host: demo.local
+    http:
       paths:
       - path: /
         pathType: Prefix
@@ -109,13 +130,11 @@ spec:
 EOF
 ```
 
-Access it with:
+Test it:
 
 ```bash
-curl http://<your-server-ip>:30905
+curl -H "Host: demo.local" http://<your-server-ip>/
 ```
-
-(Replace `30905` with the actual NodePort from step 6)
 
 ---
 
@@ -124,6 +143,7 @@ curl http://<your-server-ip>:30905
 ```bash
 # Check everything
 kubectl get all -A
+kubectl get ingress -A
 
 # Uninstall k3s completely (if needed)
 /usr/local/bin/k3s-uninstall.sh
@@ -131,7 +151,10 @@ kubectl get all -A
 
 ---
 
-**Notes**
+## Notes
+
 - Tested on Rocky Linux 9
-- Uses community ingress-nginx (retired upstream in March 2026 – fine for labs)
-- Traefik is disabled at install time to avoid cleanup issues
+- Uses community ingress-nginx (fine for labs)
+- Traefik is disabled at install time to avoid conflicts
+- **hostNetwork + DaemonSet** is the cleanest way for single-node exposure on ports 80/443
+- Avoid the old static baremetal manifests if you plan to manage the controller with Helm later
